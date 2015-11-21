@@ -5,12 +5,16 @@ import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.roots.impl.LanguageLevelProjectExtensionImpl;
+import com.intellij.pom.java.LanguageLevel;
 import com.intellij.psi.*;
 import com.intellij.psi.codeStyle.CodeStyleManager;
 import com.intellij.psi.codeStyle.JavaCodeStyleManager;
 import com.intellij.psi.javadoc.PsiDocComment;
+import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.util.PropertyUtil;
 import com.intellij.psi.util.PsiUtil;
+import com.siyeh.ig.psiutils.ImportUtils;
 import org.jetbrains.annotations.NonNls;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -31,12 +35,18 @@ public class InnerBuilderGenerator implements Runnable {
     private static final String JSR305_NONNULL = "javax.annotation.Nonnull";
     @NonNls
     private static final String FINDBUGS_NONNULL = "edu.umd.cs.findbugs.annotations.NonNull";
+    @NonNls
+    private static final String JAVA_UTIL_OBJECTS = "java.util.Objects";
 
     private final Project project;
     private final PsiFile file;
-    private final Editor editor;
     private final List<PsiFieldMember> selectedFields;
+
+    private final JavaPsiFacade javaPsiFacade;
     private final PsiElementFactory psiElementFactory;
+
+    private final PsiClass topLevelClass;
+    private final LanguageLevel languageLevel;
 
     public static void generate(final Project project, final Editor editor, final PsiFile file,
                                 final List<PsiFieldMember> selectedFields) {
@@ -48,14 +58,17 @@ public class InnerBuilderGenerator implements Runnable {
                                   final List<PsiFieldMember> selectedFields) {
         this.project = project;
         this.file = file;
-        this.editor = editor;
         this.selectedFields = selectedFields;
-        psiElementFactory = JavaPsiFacade.getInstance(project).getElementFactory();
+
+        this.topLevelClass = InnerBuilderUtils.getTopLevelClass(project, file, editor);
+        this.languageLevel = LanguageLevelProjectExtensionImpl.getInstanceImpl(project).getLanguageLevel();
+
+        this.javaPsiFacade = JavaPsiFacade.getInstance(project);
+        this.psiElementFactory = javaPsiFacade.getElementFactory();
     }
 
     @Override
     public void run() {
-        final PsiClass topLevelClass = InnerBuilderUtils.getTopLevelClass(project, file, editor);
         if (topLevelClass == null) {
             return;
         }
@@ -152,8 +165,8 @@ public class InnerBuilderGenerator implements Runnable {
             }
             if (options.contains(InnerBuilderOption.NEW_BUILDER_METHOD)) {
                 final PsiStatement newBuilderStatement = psiElementFactory.createStatementFromText(String.format(
-                                "%s builder = new %s(%s);", builderType.getPresentableText(),
-                                builderType.getPresentableText(), copyBuilderParameters.toString()),
+                        "%s builder = new %s(%s);", builderType.getPresentableText(),
+                        builderType.getPresentableText(), copyBuilderParameters.toString()),
                         copyBuilderMethod);
                 copyBuilderBody.add(newBuilderStatement);
 
@@ -161,8 +174,8 @@ public class InnerBuilderGenerator implements Runnable {
                 copyBuilderBody.add(psiElementFactory.createStatementFromText("return builder;", copyBuilderMethod));
             } else {
                 final PsiStatement newBuilderStatement = psiElementFactory.createStatementFromText(String.format(
-                                "return new %s(%s);", builderType.getPresentableText(),
-                                copyBuilderParameters.toString()),
+                        "return new %s(%s);", builderType.getPresentableText(),
+                        copyBuilderParameters.toString()),
                         copyBuilderMethod);
                 copyBuilderBody.add(newBuilderStatement);
             }
@@ -277,7 +290,7 @@ public class InnerBuilderGenerator implements Runnable {
         final PsiCodeBlock newBuilderMethodBody = newBuilderMethod.getBody();
         if (newBuilderMethodBody != null) {
             final PsiStatement newStatement = psiElementFactory.createStatementFromText(String.format(
-                            "return new %s(%s);", builderType.getPresentableText(), fieldList.toString()),
+                    "return new %s(%s);", builderType.getPresentableText(), fieldList.toString()),
                     newBuilderMethod);
             newBuilderMethodBody.add(newStatement);
         }
@@ -318,8 +331,16 @@ public class InnerBuilderGenerator implements Runnable {
         setterMethod.getParameterList().add(setterParameter);
         final PsiCodeBlock setterMethodBody = setterMethod.getBody();
         if (setterMethodBody != null) {
-            final PsiStatement assignStatement = psiElementFactory.createStatementFromText(String.format(
-                    "this.%s = %1$s;", fieldName), setterMethod);
+            String assignValue = fieldName;
+            if ((useJsr305 || useFindbugs) && languageLevel.isAtLeast(LanguageLevel.JDK_1_7)) {
+                PsiClass objectsClass = javaPsiFacade.findClass(JAVA_UTIL_OBJECTS, GlobalSearchScope.allScope(project));
+                if (objectsClass != null) {
+                    assignValue = String.format("%s.requireNonNull(%s, \"%2$s\")", JAVA_UTIL_OBJECTS, fieldName);
+                }
+            }
+            final PsiStatement assignStatement = psiElementFactory.createStatementFromText(
+                    String.format("this.%s = %s;", fieldName, assignValue), setterMethod);
+            ImportUtils.addImportIfNeeded(topLevelClass, assignStatement);
             setterMethodBody.add(assignStatement);
             setterMethodBody.add(InnerBuilderUtils.createReturnThis(psiElementFactory, setterMethod));
         }
