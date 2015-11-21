@@ -298,9 +298,6 @@ public class InnerBuilderGenerator implements Runnable {
             methodName = fieldName;
         }
 
-        final String parameterName = !BUILDER_SETTER_DEFAULT_PARAMETER_NAME.equals(fieldName) ?
-                BUILDER_SETTER_DEFAULT_PARAMETER_NAME :
-                BUILDER_SETTER_ALTERNATIVE_PARAMETER_NAME;
         final PsiMethod setterMethod = psiElementFactory.createMethod(methodName, builderType);
         final boolean useJsr305 = options.contains(InnerBuilderOption.JSR305_ANNOTATIONS);
         final boolean useFindbugs = options.contains(InnerBuilderOption.FINDBUGS_ANNOTATION);
@@ -309,7 +306,7 @@ public class InnerBuilderGenerator implements Runnable {
         if (useFindbugs) setterMethod.getModifierList().addAnnotation(FINDBUGS_NONNULL);
 
         setterMethod.getModifierList().setModifierProperty(PsiModifier.PUBLIC, true);
-        final PsiParameter setterParameter = psiElementFactory.createParameter(parameterName, fieldType);
+        final PsiParameter setterParameter = psiElementFactory.createParameter(fieldName, fieldType);
 
         if (!(fieldType instanceof PsiPrimitiveType)) {
             final PsiModifierList setterParameterModifierList = setterParameter.getModifierList();
@@ -322,11 +319,11 @@ public class InnerBuilderGenerator implements Runnable {
         final PsiCodeBlock setterMethodBody = setterMethod.getBody();
         if (setterMethodBody != null) {
             final PsiStatement assignStatement = psiElementFactory.createStatementFromText(String.format(
-                    "%s = %s;", fieldName, parameterName), setterMethod);
+                    "this.%s = %1$s;", fieldName), setterMethod);
             setterMethodBody.add(assignStatement);
             setterMethodBody.add(InnerBuilderUtils.createReturnThis(psiElementFactory, setterMethod));
         }
-        setSetterComment(setterMethod, fieldName, parameterName);
+        setSetterComment(setterMethod, fieldName);
         return setterMethod;
     }
 
@@ -475,11 +472,11 @@ public class InnerBuilderGenerator implements Runnable {
         }
     }
 
-    private void setSetterComment(final PsiMethod method, final String fieldName, final String parameterName) {
+    private void setSetterComment(final PsiMethod method, final String fieldName) {
         if (currentOptions().contains(InnerBuilderOption.WITH_JAVADOC)) {
             StringBuilder str = new StringBuilder("/**\n").append("* Sets the {@code ").append(fieldName);
             str.append("} and returns a reference to this Builder so that the methods can be chained together.\n");
-            str.append("* @param ").append(parameterName).append(" the {@code ");
+            str.append("* @param ").append(fieldName).append(" the {@code ");
             str.append(fieldName).append("} to set\n");
             str.append("* @return a reference to this Builder\n*/");
             setStringComment(method, str.toString());
