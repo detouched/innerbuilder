@@ -28,10 +28,6 @@ public class InnerBuilderGenerator implements Runnable {
     @NonNls
     private static final String BUILDER_CLASS_NAME = "Builder";
     @NonNls
-    private static final String BUILDER_SETTER_DEFAULT_PARAMETER_NAME = "val";
-    @NonNls
-    private static final String BUILDER_SETTER_ALTERNATIVE_PARAMETER_NAME = "value";
-    @NonNls
     private static final String JSR305_NONNULL = "javax.annotation.Nonnull";
     @NonNls
     private static final String FINDBUGS_NONNULL = "edu.umd.cs.findbugs.annotations.NonNull";
