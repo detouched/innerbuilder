@@ -36,17 +36,25 @@ public class InnerBuilderGenerator implements Runnable {
     @NonNls
     private static final String FINDBUGS_NONNULL = "edu.umd.cs.findbugs.annotations.NonNull";
     @NonNls
+    private static final String JSR305_NULLABLE = "javax.annotation.Nullable";
+    @NonNls
+    private static final String FINDBUGS_NULLABLE = "edu.umd.cs.findbugs.annotations.Nullable";
+    @NonNls
     private static final String JAVA_UTIL_OBJECTS = "java.util.Objects";
+    @NonNls
+    private static final String JAVA_UTIL_OPTIONAL = "java.util.Optional";
 
     private final Project project;
     private final PsiFile file;
     private final List<PsiFieldMember> selectedFields;
 
-    private final JavaPsiFacade javaPsiFacade;
     private final PsiElementFactory psiElementFactory;
 
     private final PsiClass topLevelClass;
     private final LanguageLevel languageLevel;
+
+    private final PsiClass objectsClass;
+    private final PsiClass optionalClass;
 
     public static void generate(final Project project, final Editor editor, final PsiFile file,
                                 final List<PsiFieldMember> selectedFields) {
@@ -63,8 +71,11 @@ public class InnerBuilderGenerator implements Runnable {
         this.topLevelClass = InnerBuilderUtils.getTopLevelClass(project, file, editor);
         this.languageLevel = LanguageLevelProjectExtensionImpl.getInstanceImpl(project).getLanguageLevel();
 
-        this.javaPsiFacade = JavaPsiFacade.getInstance(project);
+        JavaPsiFacade javaPsiFacade = JavaPsiFacade.getInstance(project);
         this.psiElementFactory = javaPsiFacade.getElementFactory();
+
+        objectsClass = javaPsiFacade.findClass(JAVA_UTIL_OBJECTS, GlobalSearchScope.allScope(project));
+        optionalClass = javaPsiFacade.findClass(JAVA_UTIL_OPTIONAL, GlobalSearchScope.allScope(project));
     }
 
     @Override
@@ -119,6 +130,24 @@ public class InnerBuilderGenerator implements Runnable {
         for (final PsiFieldMember member : nonFinalFields) {
             final PsiMethod setterMethod = generateBuilderSetter(builderType, member, options);
             lastAddedElement = addMethod(builderClass, lastAddedElement, setterMethod, false);
+
+            if (optionalClass != null) {
+                PsiField field = member.getElement();
+                PsiType fieldType = field.getType();
+                if (fieldType instanceof PsiClassType) {
+                    PsiClassType fieldClassType = (PsiClassType) fieldType;
+                    PsiClass fieldClass = fieldClassType.resolve();
+                    if (optionalClass.equals(fieldClass)) {
+                        PsiType[] parameters = fieldClassType.getParameters();
+                        if (parameters.length == 1) {
+                            PsiType genericType = parameters[0];
+                            final PsiMethod optionalSetterMethod =
+                                    generateOptionalBuilderSetter(builderType, field.getName(), genericType, options);
+                            lastAddedElement = addMethod(builderClass, lastAddedElement, optionalSetterMethod, false);
+                        }
+                    }
+                }
+            }
         }
 
         // builder.build() method
@@ -304,12 +333,7 @@ public class InnerBuilderGenerator implements Runnable {
         final PsiType fieldType = field.getType();
         final String fieldName = field.getName();
 
-        final String methodName;
-        if (options.contains(InnerBuilderOption.WITH_NOTATION)) {
-            methodName = String.format("with%s", InnerBuilderUtils.capitalize(fieldName));
-        } else {
-            methodName = fieldName;
-        }
+        final String methodName = getSetterMethodName(fieldName, options);
 
         final PsiMethod setterMethod = psiElementFactory.createMethod(methodName, builderType);
         final boolean useJsr305 = options.contains(InnerBuilderOption.JSR305_ANNOTATIONS);
@@ -333,7 +357,6 @@ public class InnerBuilderGenerator implements Runnable {
         if (setterMethodBody != null) {
             String assignValue = fieldName;
             if ((useJsr305 || useFindbugs) && languageLevel.isAtLeast(LanguageLevel.JDK_1_7)) {
-                PsiClass objectsClass = javaPsiFacade.findClass(JAVA_UTIL_OBJECTS, GlobalSearchScope.allScope(project));
                 if (objectsClass != null) {
                     assignValue = String.format("%s.requireNonNull(%s, \"%2$s\")", JAVA_UTIL_OBJECTS, fieldName);
                 }
@@ -346,6 +369,50 @@ public class InnerBuilderGenerator implements Runnable {
         }
         setSetterComment(setterMethod, fieldName);
         return setterMethod;
+    }
+
+    private PsiMethod generateOptionalBuilderSetter(final PsiType builderType,
+                                                    final String fieldName,
+                                                    final PsiType fieldType,
+                                                    final Set<InnerBuilderOption> options) {
+        final String methodName = getSetterMethodName(fieldName, options);
+
+        final PsiMethod setterMethod = psiElementFactory.createMethod(methodName, builderType);
+        final boolean useJsr305 = options.contains(InnerBuilderOption.JSR305_ANNOTATIONS);
+        final boolean useFindbugs = options.contains(InnerBuilderOption.FINDBUGS_ANNOTATION);
+
+        if (useJsr305) setterMethod.getModifierList().addAnnotation(JSR305_NONNULL);
+        if (useFindbugs) setterMethod.getModifierList().addAnnotation(FINDBUGS_NONNULL);
+
+        setterMethod.getModifierList().setModifierProperty(PsiModifier.PUBLIC, true);
+        final PsiParameter setterParameter = psiElementFactory.createParameter(fieldName, fieldType);
+
+        final PsiModifierList setterParameterModifierList = setterParameter.getModifierList();
+        if (setterParameterModifierList != null) {
+            if (useJsr305) setterParameterModifierList.addAnnotation(JSR305_NULLABLE);
+            if (useFindbugs) setterParameterModifierList.addAnnotation(FINDBUGS_NULLABLE);
+        }
+
+        setterMethod.getParameterList().add(setterParameter);
+
+        final PsiCodeBlock setterMethodBody = setterMethod.getBody();
+        if (setterMethodBody != null) {
+            String assignValue = String.format("%s.ofNullable(%s)", JAVA_UTIL_OPTIONAL, fieldName);
+            final PsiStatement assignStatement = psiElementFactory.createStatementFromText(
+                    String.format("this.%s = %s;", fieldName, assignValue), setterMethod);
+            ImportUtils.addImportIfNeeded(topLevelClass, assignStatement);
+            setterMethodBody.add(assignStatement);
+            setterMethodBody.add(InnerBuilderUtils.createReturnThis(psiElementFactory, setterMethod));
+        }
+        setSetterComment(setterMethod, fieldName);
+        return setterMethod;
+    }
+
+    private String getSetterMethodName(String fieldName, final Set<InnerBuilderOption> options) {
+        if (options.contains(InnerBuilderOption.WITH_NOTATION)) {
+            return String.format("with%s", InnerBuilderUtils.capitalize(fieldName));
+        }
+        return fieldName;
     }
 
 
